@@ -1687,17 +1687,8 @@ impl Decoder {
             Self::StringView(offsets, values) => {
                 let offsets = flush_offsets(offsets);
                 let values = flush_values(values);
-                let array = StringArray::try_new(offsets, values.into(), nulls.clone())?;
-                let values: Vec<&str> = (0..array.len())
-                    .map(|i| {
-                        if array.is_valid(i) {
-                            array.value(i)
-                        } else {
-                            ""
-                        }
-                    })
-                    .collect();
-                Arc::new(StringViewArray::from(values))
+                let array = StringArray::try_new(offsets, values.into(), nulls)?;
+                Arc::new(StringViewArray::from(&array))
             }
             Self::Array(field, offsets, values) => {
                 let values = values.flush(None)?;
@@ -4223,6 +4214,33 @@ mod tests {
         let int_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
         assert!(int_array.is_null(0)); // row1 is null
         assert_eq!(int_array.value(1), 42); // row3 value is 42
+    }
+
+    #[test]
+    fn test_nullable_string_view_keeps_nulls() {
+        let avro_type = make_avro_dt(Codec::Utf8View, Some(Nullability::NullFirst));
+        let mut decoder = Decoder::try_new(&avro_type).unwrap();
+        let mut data = Vec::new();
+        for value in [Some("a"), None, Some(""), None, Some("b")] {
+            match value {
+                Some(s) => {
+                    data.extend_from_slice(&encode_avro_long(1));
+                    data.extend_from_slice(&encode_avro_bytes(s.as_bytes()));
+                }
+                None => data.extend_from_slice(&encode_avro_long(0)),
+            }
+        }
+        let mut cursor = AvroCursor::new(&data);
+        for _ in 0..5 {
+            decoder.decode(&mut cursor).unwrap();
+        }
+        let array = decoder.flush(None).unwrap();
+        let strings = array.as_string_view();
+        assert_eq!(strings.null_count(), 2);
+        assert_eq!(
+            strings.iter().collect::<Vec<_>>(),
+            vec![Some("a"), None, Some(""), None, Some("b")]
+        );
     }
 
     #[test]
